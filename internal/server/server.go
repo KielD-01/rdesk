@@ -6,6 +6,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io/fs"
@@ -100,13 +101,40 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/ws/viewer", s.handleViewer)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	files := http.FileServer(http.FS(s.cfg.Web))
+	index, version := s.versionedIndex()
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
+		h := w.Header()
+		// no-transform keeps CDNs (Cloudflare) from rewriting the page; the CSP
+		// keeps third-party scripts away from a page that controls a computer.
+		h.Set("Cache-Control", "no-cache, no-transform")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "+
+			"media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			h.Set("Content-Type", "text/html; charset=utf-8")
+			h.Set("ETag", `"`+version+`"`)
+			w.Write(index)
+			return
+		}
 		files.ServeHTTP(w, r)
 	}))
 	return mux
+}
+
+// versionedIndex stamps asset URLs in index.html with a content hash, so a
+// CDN that cached an old or broken copy can never serve it for a new build.
+func (s *Server) versionedIndex() ([]byte, string) {
+	index, _ := fs.ReadFile(s.cfg.Web, "index.html")
+	h := sha256.New()
+	for _, name := range []string{"index.html", "viewer.js", "style.css"} {
+		b, _ := fs.ReadFile(s.cfg.Web, name)
+		h.Write(b)
+	}
+	v := hex.EncodeToString(h.Sum(nil))[:12]
+	out := strings.ReplaceAll(string(index), `src="viewer.js"`, `src="viewer.js?v=`+v+`"`)
+	out = strings.ReplaceAll(out, `href="style.css"`, `href="style.css?v=`+v+`"`)
+	return []byte(out), v
 }
 
 // ICEServers returns the ICE servers handed to a client, with short-lived
