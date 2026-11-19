@@ -69,6 +69,7 @@ func Run(cfg config.Config, opts HostOptions, log *slog.Logger) {
 	a.Settings().SetTheme(rdeskTheme{p})
 	u := &ui{app: a, log: log, opts: opts, cfg: cfg, seen: map[string]bool{}, p: p}
 	u.win = a.NewWindow("rdesk")
+	u.win.SetPadded(false) // the accent panel runs to the window edges
 	content := u.build()
 	u.win.SetContent(content)
 	// As tall as the content: the window grows when sessions appear.
