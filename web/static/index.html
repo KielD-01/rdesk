@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>rdesk</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='5' width='26' height='17' rx='3' fill='%234f8cff'/%3E%3Crect x='11' y='24' width='10' height='3' rx='1.5' fill='%234f8cff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<main id="login" class="login">
+  <form id="connect-form" class="card" autocomplete="off">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="5" width="26" height="17" rx="3"/><rect x="11" y="24" width="10" height="3" rx="1.5"/></svg>
+      <span>rdesk</span>
+    </div>
+    <p class="lead">Підключення до віддаленого комп'ютера</p>
+    <label>ID хоста
+      <input id="host-id" inputmode="numeric" placeholder="123 456 789" maxlength="11" required>
+    </label>
+    <label>Пароль
+      <input id="password" type="password" placeholder="xxxx-xxxx" autocapitalize="off" spellcheck="false" required>
+    </label>
+    <button id="connect-btn" type="submit">Підключитися</button>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+    <p class="hint">ID і пароль показує <code>rdesk</code> на віддаленій машині. Пароль ніколи не передається в мережу: хост і переглядач лише доводять одне одному, що його знають.</p>
+  </form>
+</main>
+
+<section id="session" class="session" hidden>
+  <div id="stage" class="stage">
+    <video id="screen" autoplay playsinline tabindex="0"></video>
+    <div id="overlay" class="overlay" hidden></div>
+  </div>
+
+  <nav id="toolbar" class="toolbar">
+    <span id="host-name" class="host-name"></span>
+    <span id="stats" class="stats" title="Тип з'єднання, кадри/с, бітрейт, затримка"></span>
+    <span class="sep"></span>
+    <button data-act="fit" title="Масштаб: вписати / 1:1">⤢ <span id="fit-label">Вписати</span></button>
+    <button data-act="fullscreen" title="На весь екран (F11)">⛶</button>
+    <button data-act="cad" title="Надіслати Ctrl+Alt+Del">Ctrl+Alt+Del</button>
+    <button data-act="files" title="Файли">📁 Файли</button>
+    <button data-act="audio" id="audio-btn" title="Звук">🔇</button>
+    <button data-act="disconnect" class="danger" title="Від'єднатися">✕</button>
+  </nav>
+
+  <aside id="files" class="files" hidden>
+    <header>
+      <strong>Файли на хості</strong>
+      <button data-act="files" aria-label="Закрити">✕</button>
+    </header>
+    <div class="files-path">
+      <button id="files-up" title="Вгору">↑</button>
+      <input id="files-path" spellcheck="false">
+    </div>
+    <ul id="files-list" class="files-list"></ul>
+    <footer>
+      <label class="upload">⬆ Надіслати файл на хост<input id="upload-input" type="file" multiple hidden></label>
+      <p class="hint">Або перетягніть файли на екран. Вони потрапляють у <code>~/Downloads/rdesk</code> хоста.</p>
+    </footer>
+  </aside>
+
+  <div id="transfers" class="transfers"></div>
+</section>
+
+<script src="viewer.js"></script>
+</body>
+</html>

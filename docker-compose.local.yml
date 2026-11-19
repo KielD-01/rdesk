@@ -1,0 +1,34 @@
+name: rdesk-local
+# Local stack: https://rdesk.localhost through the shared ~/Personal/infra Caddy.
+# TURN advertises 127.0.0.1 and may relay to private peers, so it only works on this machine.
+#   docker compose -f docker-compose.local.yml up -d --build
+#   ./bin/rdesk -server https://rdesk.localhost
+
+networks:
+  proxy-network:
+    external: true
+
+services:
+  rdesk-server:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: rdesk-server:local
+    container_name: rdesk-server-local
+    restart: unless-stopped
+    networks: [proxy-network]
+    environment:
+      RDESK_LISTEN: ":8080"
+      RDESK_TURN_LISTEN: "0.0.0.0:3479"
+      RDESK_PUBLIC_IP: "127.0.0.1"
+      RDESK_RELAY_PORTS: "49400-49420"
+      RDESK_TURN_ALLOW_PRIVATE: "1"
+      RDESK_TRUST_PROXY: "1"
+    ports:
+      - "127.0.0.1:3479:3479/udp"
+      - "127.0.0.1:3479:3479/tcp"
+      - "127.0.0.1:49400-49420:49400-49420/udp"
+    labels:
+      caddy: rdesk.localhost
+      caddy.tls: internal
+      caddy.reverse_proxy: "{{upstreams 8080}}"

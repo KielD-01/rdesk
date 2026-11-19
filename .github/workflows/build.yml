@@ -1,0 +1,73 @@
+# Builds the host agent natively on every OS (it needs cgo: screen capture,
+# input and the bundled OpenH264/Opus static libraries) and the server for
+# linux/amd64 + arm64. Artifacts land on the run page.
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  host:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            out: rdesk-linux-amd64
+          - os: macos-15
+            out: rdesk-macos-arm64
+          - os: macos-15-intel
+            out: rdesk-macos-amd64
+          - os: windows-2025
+            out: rdesk-windows-amd64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y gcc g++ libx11-dev libxext-dev libxtst-dev
+      - name: MinGW-w64 toolchain
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+          path-type: inherit
+      - name: Test
+        if: runner.os != 'Windows'
+        run: go test ./...
+      - name: Build (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: go build -trimpath -ldflags="-s -w" -o dist/${{ matrix.out }} ./cmd/rdesk
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          export CGO_ENABLED=1 CC=gcc CXX=g++
+          go test ./...
+          go build -trimpath -ldflags="-s -w -extldflags=-static" -o dist/${{ matrix.out }} ./cmd/rdesk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.out }}
+          path: dist/${{ matrix.out }}
+
+  server:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+      - run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w" -o dist/rdesk-server-linux-$arch ./cmd/rdesk-server
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rdesk-server
+          path: dist/

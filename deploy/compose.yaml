@@ -1,0 +1,53 @@
+name: rdesk
+# rdesk on rdesk.romanovich.dev — one container: the WebSocket signaling server, the
+# browser viewer and an embedded TURN/STUN relay (pion/turn).
+#
+# HTTP/WebSocket goes through the shared infra caddy-docker-proxy (TLS: the CF wildcard
+# origin cert mounted into caddy at /certs). TURN cannot go through Caddy: UDP/TCP 3479
+# and the relay range 49400–49460/udp are published straight from the container
+# (gh-turn already owns 3478 and 49160–49359 on this host). The relay refuses to reach
+# private/loopback ranges, so it can't be used to poke this server's internal services.
+#
+# No database or cache: hosts and sessions live in memory; a restart only makes hosts
+# reconnect (they retry automatically).
+#
+# Secrets (deploy.me keeps them; Environment tab) — see deploy/rdesk.env.example:
+#   deploy/rdesk.env  RDESK_TURN_SECRET, RDESK_PUBLIC_IP
+#
+# By hand: docker compose --project-directory . -f deploy/compose.yaml up -d --build
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+networks:
+  proxy-network:
+    external: true
+
+services:
+  rdesk-server:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: rdesk-server:${IMAGE_TAG:-latest}
+    container_name: rdesk-server
+    restart: unless-stopped
+    logging: *logging
+    networks: [proxy-network]
+    env_file: ./deploy/rdesk.env
+    environment:
+      RDESK_LISTEN: ":8080"
+      RDESK_TURN_LISTEN: "0.0.0.0:3479"
+      RDESK_RELAY_PORTS: "49400-49460"
+      RDESK_TRUST_PROXY: "1"
+    ports:
+      - "3479:3479/udp"
+      - "3479:3479/tcp"
+      - "49400-49460:49400-49460/udp"
+    labels:
+      caddy: rdesk.romanovich.dev
+      caddy.tls: /certs/romanovich.dev.pem /certs/romanovich.dev.key
+      caddy.reverse_proxy: "{{upstreams 8080}}"
+      caddy.reverse_proxy.stream_close_delay: 5m
