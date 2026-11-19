@@ -149,6 +149,12 @@ CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -extldflags=-static" -o bin/rde
 `-extldflags=-static` вшиває libstdc++/libgcc, тож `rdesk.exe` не тягне DLL з
 MinGW. Звук береться WASAPI loopback з виходу за замовчуванням.
 
+Або крос-збіркою з Linux (потрібен лише Docker):
+
+```bash
+./scripts/build-windows.sh   # → bin/rdesk.exe, імпортує тільки KERNEL32.dll і msvcrt.dll
+```
+
 ### Сервер
 
 ```bash
@@ -159,7 +165,8 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/rdesk-server ./cmd/rdes
 
 `.github/workflows/build.yml` збирає хост нативно на Linux, macOS (arm64 і
 x64) і Windows та сервер для linux/amd64+arm64 — артефакти з'являються на
-сторінці запуску після пушу на GitHub.
+сторінці запуску. macOS-збірку інакше не перевірити: для неї потрібні Apple SDK
+і Mac (або macOS-раннер GitHub).
 
 ## Обмеження MVP
 
@@ -173,9 +180,9 @@ x64) і Windows та сервер для linux/amd64+arm64 — артефакт�
 - Курсор віддаленої машини не малюється у відео: видно локальний курсор
   браузера.
 - Один монітор за раз (вибір прапорцем `-display`).
-- Збирання і запуск перевірено на Linux (X11). Код для Windows і macOS
-  компілюється лише нативно (cgo); Windows-частини перевірено крос-компіляцією
-  без cgo, macOS — ще ні. Перша збірка в CI покаже, чи все складається.
+- Збирання і запуск перевірено на Linux (X11). Windows-хост збирається
+  (крос-компіляція MinGW), але на справжній Windows ще не запускався. macOS-код
+  ще жодного разу не компілювався — перша збірка в CI покаже.
 
 ## Розробка
 
