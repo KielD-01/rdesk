@@ -8,6 +8,8 @@ const ui = {
   login: $("login"), form: $("connect-form"), id: $("host-id"), pw: $("password"),
   btn: $("connect-btn"), status: $("status"),
   session: $("session"), stage: $("stage"), video: $("screen"), overlay: $("overlay"),
+  term: $("term"), termScreen: $("term-screen"), termBtn: $("term-btn"), screenBtn: $("screen-btn"),
+  termKeys: $("term-keys"), keyCtrl: $("key-ctrl"),
   toolbar: $("toolbar"), hostName: $("host-name"), stats: $("stats"), fitLabel: $("fit-label"),
   audioBtn: $("audio-btn"), files: $("files"), filesPath: $("files-path"), filesList: $("files-list"),
   filesUp: $("files-up"), upload: $("upload-input"), transfers: $("transfers"),
@@ -59,15 +61,23 @@ ui.id.addEventListener("input", () => { ui.id.value = formatId(ui.id.value); });
 const fromHash = location.hash.slice(1).replace(/\D/g, "");
 if (fromHash) { ui.id.value = formatId(fromHash); ui.pw.focus(); } else { ui.id.focus(); }
 
+function store(key, value) {
+  try { if (value === undefined) return localStorage.getItem(key); localStorage.setItem(key, value); } catch { return null; }
+}
+const savedMode = store("rdesk.mode");
+if (savedMode) for (const r of document.querySelectorAll('input[name="mode"]')) r.checked = r.value === savedMode;
+
 ui.form.addEventListener("submit", (e) => {
   e.preventDefault();
   const id = ui.id.value.replace(/\D/g, "");
   if (id.length !== 9) { setStatus("ID складається з 9 цифр", true); return; }
   if (!window.isSecureContext) { setStatus("Потрібен HTTPS (або localhost) для криптографії браузера", true); return; }
-  connect(id, ui.pw.value);
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  store("rdesk.mode", mode);
+  connect(id, ui.pw.value, mode);
 });
 
-function connect(id, password) {
+function connect(id, password, mode = "desktop") {
   ui.btn.disabled = true;
   setStatus("З'єднання з сервером…");
   const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -75,7 +85,7 @@ function connect(id, password) {
   S = {
     id, password, ws, pc: null, control: null, input: null, pendingCandidates: [], remoteSet: false,
     authed: false, ended: false, nonce: "", hostInfo: null, pressed: new Set(), stats: null,
-    clipLast: null, clipPending: null, lsPath: "", downloads: new Map(),
+    clipLast: null, clipPending: null, lsPath: "", downloads: new Map(), mode, term: null,
   };
   const s = S;
 
@@ -209,6 +219,7 @@ function fail(s, msg) {
 }
 
 function teardown(s) {
+  closeTerminal(s);
   try { s.ws.close(); } catch {}
   try { s.pc && s.pc.close(); } catch {}
   clearInterval(s.stats);
@@ -222,8 +233,7 @@ function disconnect() {
   teardown(s);
   S = null;
   ui.video.srcObject = null;
-  ui.session.hidden = true;
-  ui.files.hidden = true;
+  resetSessionUI();
   hideOverlay();
   ui.login.hidden = false;
   ui.btn.disabled = false;
@@ -249,10 +259,18 @@ function showOverlay(msg, final = false) {
   ui.overlay.hidden = false;
 }
 
-function disconnect_ui() {
-  ui.video.srcObject = null;
+function resetSessionUI() {
   ui.session.hidden = true;
   ui.files.hidden = true;
+  ui.term.hidden = true;
+  ui.term.classList.remove("max");
+  ui.session.classList.remove("term-only");
+  ui.termScreen.innerHTML = "";
+}
+
+function disconnect_ui() {
+  ui.video.srcObject = null;
+  resetSessionUI();
   hideOverlay();
   ui.login.hidden = false;
   ui.btn.disabled = false;
@@ -273,6 +291,18 @@ function startSession(s) {
   document.title = `${info.name || s.id} — rdesk`;
   const feats = new Set(info.features || []);
   ui.audioBtn.hidden = !feats.has("audio");
+  ui.termBtn.hidden = !feats.has("terminal");
+  if (s.mode === "terminal") {
+    if (!feats.has("terminal")) {
+      toast("Хост у режимі «лише перегляд»: термінал вимкнено, показую екран");
+    } else {
+      sendControl(s, { t: "media", text: "off" });
+      ui.session.classList.add("term-only");
+      s.stats = setInterval(() => updateStats(s), 1000);
+      openTerminal(s);
+      return;
+    }
+  }
   // The connect click was a user gesture, so sound may start right away.
   ui.video.muted = false;
   ui.video.play().catch(() => { ui.video.muted = true; ui.video.play().catch(() => {}); updateAudioBtn(); });
@@ -357,6 +387,20 @@ ui.session.addEventListener("click", (e) => {
       updateAudioBtn();
       break;
     case "disconnect": disconnect(); break;
+    case "terminal": openTerminal(s); return;
+    case "term-hide": ui.term.hidden = true; break;
+    case "term-max": ui.term.classList.toggle("max"); fitTerminal(s); return;
+    case "term-kill": closeTerminal(s); ui.term.hidden = true; break;
+    case "screen":
+      sendControl(s, { t: "media", text: "on" });
+      ui.session.classList.remove("term-only");
+      ui.screenBtn.hidden = true;
+      ui.video.muted = false;
+      ui.video.play().catch(() => { ui.video.muted = true; updateAudioBtn(); });
+      updateAudioBtn();
+      armToolbarAutoHide();
+      fitTerminal(s);
+      return;
   }
   ui.video.focus();
 });
@@ -431,7 +475,8 @@ ui.video.addEventListener("wheel", (e) => {
 function keyHandler(e) {
   const s = S;
   if (!s || !s.authed || ui.session.hidden) return;
-  if (e.target instanceof HTMLInputElement) return; // typing in our own UI
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return; // our UI / the terminal
+  if (e.target.closest && e.target.closest(".term")) return;
   if (!e.code || e.code === "Unidentified") return;
   e.preventDefault();
   const down = e.type === "keydown";
@@ -604,4 +649,106 @@ ui.stage.addEventListener("drop", (e) => {
   ui.stage.classList.remove("dragover");
   if (!S || !S.authed) return;
   for (const f of e.dataTransfer.files) uploadFile(S, f);
+});
+
+// ---------- terminal ----------
+
+const termTheme = {
+  background: "#0d1117", foreground: "#e6edf3", cursor: "#4f8cff", cursorAccent: "#0d1117",
+  selectionBackground: "rgba(79,140,255,.35)",
+  black: "#484f58", red: "#ff7b72", green: "#3fb950", yellow: "#d29922", blue: "#58a6ff",
+  magenta: "#bc8cff", cyan: "#39c5cf", white: "#b1bac4",
+  brightBlack: "#6e7681", brightRed: "#ffa198", brightGreen: "#56d364", brightYellow: "#e3b341",
+  brightBlue: "#79c0ff", brightMagenta: "#d2a8ff", brightCyan: "#56d4dd", brightWhite: "#f0f6fc",
+};
+
+let ctrlArmed = false;
+
+function openTerminal(s) {
+  ui.term.hidden = false;
+  if (s.term && s.term.alive) { s.term.xterm.focus(); fitTerminal(s); return; }
+  closeTerminal(s);
+  ui.termScreen.innerHTML = "";
+
+  const xterm = new Terminal({
+    theme: termTheme, cursorBlink: true, scrollback: 5000, allowProposedApi: false,
+    fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace',
+    fontSize: window.matchMedia("(max-width: 760px)").matches ? 13 : 14,
+  });
+  const fit = new FitAddon.FitAddon();
+  xterm.loadAddon(fit);
+  xterm.open(ui.termScreen);
+  fit.fit();
+
+  const dc = s.pc.createDataChannel("term", { ordered: true });
+  dc.binaryType = "arraybuffer";
+  const t = { xterm, fit, dc, alive: true, ro: null };
+  s.term = t;
+
+  dc.onopen = () => dc.send(JSON.stringify({ cols: xterm.cols, rows: xterm.rows }));
+  dc.onmessage = (e) => {
+    if (typeof e.data === "string") {
+      const m = JSON.parse(e.data);
+      if (m.t === "exit") {
+        t.alive = false;
+        xterm.write(`\r\n\x1b[90m[${m.error ? "помилка: " + m.error : "оболонка завершилась, код " + m.code}] Enter — нова сесія\x1b[0m\r\n`);
+      }
+      return;
+    }
+    xterm.write(new Uint8Array(e.data));
+  };
+  dc.onclose = () => { t.alive = false; };
+
+  xterm.onData((data) => {
+    if (!t.alive) {
+      if (data === "\r") openTerminal(s);
+      return;
+    }
+    if (ctrlArmed && data.length === 1) {
+      const c = data.toLowerCase().charCodeAt(0);
+      if (c >= 97 && c <= 122) data = String.fromCharCode(c - 96); // Ctrl+letter
+      setCtrl(false);
+    }
+    if (dc.readyState === "open") dc.send(enc.encode(data));
+  });
+  xterm.onResize(({ cols, rows }) => {
+    if (dc.readyState === "open") dc.send(JSON.stringify({ t: "resize", cols, rows }));
+  });
+  t.ro = new ResizeObserver(() => fitTerminal(s));
+  t.ro.observe(ui.termScreen);
+  xterm.focus();
+}
+
+function fitTerminal(s) {
+  if (s && s.term) requestAnimationFrame(() => { try { s.term.fit.fit(); } catch {} });
+}
+
+function closeTerminal(s) {
+  const t = s && s.term;
+  if (!t) return;
+  s.term = null;
+  try { t.ro && t.ro.disconnect(); } catch {}
+  try { t.dc.close(); } catch {}
+  try { t.xterm.dispose(); } catch {}
+}
+
+function setCtrl(on) {
+  ctrlArmed = on;
+  ui.keyCtrl.classList.toggle("on", on);
+}
+
+const keySeq = { esc: "\x1b", tab: "\t", up: "\x1b[A", down: "\x1b[B", right: "\x1b[C", left: "\x1b[D" };
+
+// Extra keys for phones: keep the on-screen keyboard open (no focus change).
+ui.termKeys.addEventListener("pointerdown", (e) => { if (e.target.closest("button")) e.preventDefault(); });
+ui.termKeys.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-key]");
+  const s = S;
+  if (!b || !s || !s.term) return;
+  const k = b.dataset.key;
+  if (k === "ctrl") { setCtrl(!ctrlArmed); s.term.xterm.focus(); return; }
+  const seq = keySeq[k] || k;
+  if (s.term.alive && s.term.dc.readyState === "open") s.term.dc.send(enc.encode(seq));
+  setCtrl(false);
+  s.term.xterm.focus();
 });

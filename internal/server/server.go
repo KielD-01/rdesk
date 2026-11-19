@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -109,7 +110,7 @@ func (s *Server) Handler() http.Handler {
 		h.Set("Cache-Control", "no-cache, no-transform")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "+
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "+
 			"media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			h.Set("Content-Type", "text/html; charset=utf-8")
@@ -122,20 +123,26 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// versionedIndex stamps asset URLs in index.html with a content hash, so a
-// CDN that cached an old or broken copy can never serve it for a new build.
+// versionedIndex stamps local asset URLs in index.html with a content hash,
+// so a CDN that cached an old or broken copy can never serve it for a new build.
 func (s *Server) versionedIndex() ([]byte, string) {
 	index, _ := fs.ReadFile(s.cfg.Web, "index.html")
 	h := sha256.New()
-	for _, name := range []string{"index.html", "viewer.js", "style.css"} {
-		b, _ := fs.ReadFile(s.cfg.Web, name)
-		h.Write(b)
-	}
+	fs.WalkDir(s.cfg.Web, ".", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			b, _ := fs.ReadFile(s.cfg.Web, p)
+			h.Write([]byte(p))
+			h.Write(b)
+		}
+		return nil
+	})
 	v := hex.EncodeToString(h.Sum(nil))[:12]
-	out := strings.ReplaceAll(string(index), `src="viewer.js"`, `src="viewer.js?v=`+v+`"`)
-	out = strings.ReplaceAll(out, `href="style.css"`, `href="style.css?v=`+v+`"`)
+	out := assetRef.ReplaceAllString(string(index), `$1="$2?v=`+v+`"`)
 	return []byte(out), v
 }
+
+// assetRef matches src/href attributes pointing at local .js/.css files.
+var assetRef = regexp.MustCompile(`(src|href)="([A-Za-z0-9_./-]+\.(?:js|css))"`)
 
 // ICEServers returns the ICE servers handed to a client, with short-lived
 // TURN REST credentials.

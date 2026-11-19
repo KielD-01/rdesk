@@ -388,7 +388,7 @@ func (s *session) onControl(msg webrtc.DataChannelMessage) {
 		_, size := h.video.geometry()
 		features := []string{"clipboard", "files"}
 		if h.opt.Input {
-			features = append(features, "input")
+			features = append(features, "input", "terminal")
 		}
 		if h.audio != nil {
 			features = append(features, "audio")
@@ -413,6 +413,18 @@ func (s *session) onControl(msg webrtc.DataChannelMessage) {
 		}
 	case "keyframe":
 		h.video.requestKeyframe()
+	case "media": // the viewer pauses video/audio, e.g. in terminal-only mode
+		if m.Text == "off" {
+			h.video.remove(s)
+			if h.audio != nil {
+				h.audio.remove(s)
+			}
+		} else {
+			h.video.add(s, s.videoTrack)
+			if h.audio != nil {
+				h.audio.add(s, s.audioTrack)
+			}
+		}
 	case "ls":
 		s.listDir(m.Path)
 	case "get":
@@ -515,9 +527,15 @@ func (s *session) onDataChannel(dc *webrtc.DataChannel) {
 		dc.Close()
 		return
 	}
-	if dc.Label() == "upload" {
+	switch dc.Label() {
+	case "upload":
 		s.receiveFile(dc)
 		return
+	case "term":
+		if s.h.opt.Input { // view-only hosts get no shell either
+			s.serveTerminal(dc)
+			return
+		}
 	}
 	dc.Close()
 }
