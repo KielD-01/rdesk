@@ -1,69 +1,47 @@
 // rdesk: the host agent. Run it on the machine you want to reach.
+// It opens a window (ID, password, connections); -headless runs it in the console.
 package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
 	"rdesk/internal/capture"
+	"rdesk/internal/config"
+	"rdesk/internal/gui"
 	"rdesk/internal/host"
 )
 
-type config struct {
-	Server   string `json:"server"`
-	Token    string `json:"token"`
-	Password string `json:"password,omitempty"`
-}
-
-func configPath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		dir = "."
-	}
-	return filepath.Join(dir, "rdesk", "config.json")
-}
-
-func loadConfig() (config, error) {
-	var c config
-	b, err := os.ReadFile(configPath())
-	if err == nil {
-		err = json.Unmarshal(b, &c)
-	} else if os.IsNotExist(err) {
-		err = nil
-	}
-	return c, err
-}
-
-func saveConfig(c config) error {
-	p := configPath()
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return err
-	}
-	b, _ := json.MarshalIndent(c, "", "  ")
-	return os.WriteFile(p, b, 0o600)
+type flags struct {
+	display   int
+	fps       int
+	bitrate   int
+	maxWidth  int
+	audioDev  string
+	downloads string
 }
 
 func main() {
-	serverURL := flag.String("server", "", "rendezvous server URL, e.g. https://rdesk.example.com (remembered)")
+	serverURL := flag.String("server", "", "rendezvous server URL (remembered); default "+config.DefaultServer)
 	password := flag.String("password", "", "set a permanent password for unattended access (remembered); \"-\" removes it")
-	display := flag.Int("display", 0, "display index to share (Linux: -1 = all monitors)")
-	fps := flag.Int("fps", 30, "max frames per second")
-	bitrate := flag.Int("bitrate", 6000, "max video bitrate, kbit/s")
-	maxWidth := flag.Int("max-width", 2560, "downscale screens wider than this")
-	noAudio := flag.Bool("no-audio", false, "do not stream system audio")
-	audioDev := flag.String("audio-device", "", "capture device name (substring) for system audio")
-	viewOnly := flag.Bool("view-only", false, "ignore the viewer's mouse and keyboard")
-	downloads := flag.String("downloads", "", "where uploaded files go (default ~/Downloads/rdesk)")
+	headless := flag.Bool("headless", false, "no window: print the ID and password to the console")
+	var f flags
+	flag.IntVar(&f.display, "display", 0, "display index to share (Linux: -1 = all monitors)")
+	flag.IntVar(&f.fps, "fps", 30, "max frames per second")
+	flag.IntVar(&f.bitrate, "bitrate", 6000, "max video bitrate, kbit/s")
+	flag.IntVar(&f.maxWidth, "max-width", 2560, "downscale screens wider than this")
+	noAudio := flag.Bool("no-audio", false, "do not stream system audio (remembered)")
+	flag.StringVar(&f.audioDev, "audio-device", "", "capture device name (substring) for system audio")
+	viewOnly := flag.Bool("view-only", false, "ignore the viewer's mouse and keyboard (remembered)")
+	flag.StringVar(&f.downloads, "downloads", "", "where uploaded files go (default ~/Downloads/rdesk)")
 	listDisplays := flag.Bool("list-displays", false, "print displays and exit")
 	verbose := flag.Bool("v", false, "verbose logs")
 	flag.Parse()
@@ -81,18 +59,13 @@ func main() {
 		return
 	}
 
-	cfg, err := loadConfig()
+	cfg, err := config.Load()
 	if err != nil {
-		fatal("reading %s: %v", configPath(), err)
+		fatal("reading %s: %v", config.Path(), err)
 	}
 	changed := false
-	if *serverURL != "" && *serverURL != cfg.Server {
+	if *serverURL != "" {
 		cfg.Server, changed = strings.TrimRight(*serverURL, "/"), true
-	}
-	if cfg.Token == "" {
-		b := make([]byte, 32)
-		rand.Read(b)
-		cfg.Token, changed = base64.RawURLEncoding.EncodeToString(b), true
 	}
 	switch *password {
 	case "":
@@ -104,11 +77,16 @@ func main() {
 		}
 		cfg.Password, changed = *password, true
 	}
-	if cfg.Server == "" {
-		fatal("no server configured: run once with -server https://your-rdesk-server")
-	}
+	flag.Visit(func(fl *flag.Flag) {
+		switch fl.Name {
+		case "no-audio":
+			cfg.NoAudio, changed = *noAudio, true
+		case "view-only":
+			cfg.ViewOnly, changed = *viewOnly, true
+		}
+	})
 	if changed {
-		if err := saveConfig(cfg); err != nil {
+		if err := config.Save(cfg); err != nil {
 			fatal("saving config: %v", err)
 		}
 	}
@@ -116,43 +94,61 @@ func main() {
 	if err := capture.Preflight(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
-
-	dl := *downloads
-	if dl == "" {
+	if f.downloads == "" {
 		home, _ := os.UserHomeDir()
-		dl = filepath.Join(home, "Downloads", "rdesk")
+		f.downloads = filepath.Join(home, "Downloads", "rdesk")
 	}
 
-	h := host.New(host.Options{
-		Server:   cfg.Server,
-		Token:    cfg.Token,
-		Password: cfg.Password,
-		Video: host.VideoOptions{
-			Display: *display, FPS: *fps, Bitrate: *bitrate * 1000, MaxWidth: *maxWidth,
-		},
-		Audio:    !*noAudio,
-		AudioDev: *audioDev,
-		Input:    !*viewOnly,
-		Download: dl,
-		OnCredentials: func(id, pw string, oneTime bool, url string) {
-			fmt.Println()
-			fmt.Println("  ┌─ rdesk host ready ─────────────────────────")
-			fmt.Printf("  │ ID:       %s %s %s\n", id[0:3], id[3:6], id[6:])
-			if oneTime {
-				fmt.Printf("  │ Password: %s   (one-time, changes after each session)\n", pw)
-			} else {
-				fmt.Println("  │ Password: (permanent password from config)")
-			}
-			fmt.Printf("  │ Connect:  %s\n", url)
-			fmt.Println("  └────────────────────────────────────────────")
-			fmt.Println()
-		},
-	}, log)
+	options := func(c config.Config) host.Options {
+		return host.Options{
+			Server:   c.Server,
+			Token:    c.Token,
+			Password: c.Password,
+			Video: host.VideoOptions{
+				Display: f.display, FPS: f.fps, Bitrate: f.bitrate * 1000, MaxWidth: f.maxWidth,
+			},
+			Audio:    !c.NoAudio,
+			AudioDev: f.audioDev,
+			Input:    !c.ViewOnly,
+			Download: f.downloads,
+		}
+	}
 
+	if *headless || !haveDisplay() {
+		runHeadless(options(cfg), log)
+		return
+	}
+	gui.Run(cfg, options, log)
+}
+
+// haveDisplay reports whether a window can be shown.
+func haveDisplay() bool {
+	if runtime.GOOS != "linux" {
+		return true
+	}
+	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
+}
+
+func runHeadless(o host.Options, log *slog.Logger) {
+	o.OnCredentials = func(id, pw string, oneTime bool, url string) {
+		fmt.Println()
+		fmt.Println("  ┌─ rdesk host ready ─────────────────────────")
+		fmt.Printf("  │ ID:       %s %s %s\n", id[0:3], id[3:6], id[6:])
+		if oneTime {
+			fmt.Printf("  │ Password: %s   (one-time, changes after each session)\n", pw)
+		} else {
+			fmt.Println("  │ Password: (permanent password from config)")
+		}
+		fmt.Printf("  │ Connect:  %s\n", url)
+		fmt.Println("  └────────────────────────────────────────────")
+		fmt.Println()
+	}
+	h := host.New(o, log)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	log.Info("connecting", "server", cfg.Server)
+	log.Info("connecting", "server", o.Server)
 	h.Run(ctx)
+	h.Close()
 }
 
 func fatal(f string, a ...any) {

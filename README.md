@@ -47,14 +47,24 @@ nonce та DTLS-відбитків обох сторін. Тому навіть 
 
 ### Хост
 
-```bash
-rdesk -server https://rdesk.romanovich.dev
-```
+Просто запустіть `rdesk` — відкриється вікно:
 
-Адреса сервера запам'ятовується, далі достатньо `rdesk`. Корисні прапорці:
+![Вікно rdesk](design/window.png)
+
+Ліворуч — ID і одноразовий пароль цього комп'ютера (кнопки копіювання й нового
+пароля), праворуч — підключення до іншого комп'ютера (відкриває переглядач у
+браузері) і список тих, хто підключений, з кнопкою «Від'єднати». У налаштуваннях —
+сервер, постійний пароль, режим «лише перегляд» і звук. Коли хтось підключається,
+вікно з'являється й показує системне сповіщення. На Windows і macOS закриття
+вікна ховає rdesk у трей; на Linux — питає, чи вийти.
+
+Без вікна (сервер, SSH, автозапуск): `rdesk -headless` друкує ID і пароль у
+консоль. Сервер за замовчуванням — `https://rdesk.romanovich.dev`; інший задається
+в налаштуваннях або `-server URL` (запам'ятовується). Корисні прапорці:
 
 | прапорець | за замовчуванням | що робить |
 |---|---|---|
+| `-headless` | — | без вікна, ID і пароль у консоль |
 | `-password` | — | постійний пароль (≥ 8 символів), `-` — повернути одноразові коди |
 | `-display N` | `0` | який монітор показувати (`-list-displays`); на Linux `-1` — усі |
 | `-fps` | `30` | максимум кадрів за секунду |
@@ -110,7 +120,8 @@ OpenH264 і Opus уже вшиті статичними бібліотеками
 ### Linux (x86_64 / arm64)
 
 ```bash
-sudo apt install gcc g++ libx11-dev libxext-dev libxtst-dev
+sudo apt install gcc g++ libx11-dev libxext-dev libxtst-dev \
+  libgl1-mesa-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev
 go build -trimpath -ldflags="-s -w" -o bin/rdesk ./cmd/rdesk
 ```
 
@@ -143,7 +154,7 @@ pacman -S mingw-w64-x86_64-gcc
 Далі в терміналі **MSYS2 MINGW64** (або в будь-якому, де `gcc` з MinGW у `PATH`):
 
 ```bash
-CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -extldflags=-static" -o bin/rdesk.exe ./cmd/rdesk
+CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -H windowsgui -extldflags=-static" -o bin/rdesk.exe ./cmd/rdesk
 ```
 
 `-extldflags=-static` вшиває libstdc++/libgcc, тож `rdesk.exe` не тягне DLL з
@@ -200,6 +211,7 @@ internal/host      сесії WebRTC, конвеєри відео/звуку, ф
 internal/capture   захоплення екрана (X11 XShm; GDI/ScreenCaptureKit через kbinani/screenshot)
 internal/input     ввід (XTest, SendInput, CGEvent) і таблиця клавіш KeyboardEvent.code
 internal/auth      взаємна автентифікація паролем
+internal/gui       вікно (Fyne); RDESK_SNAPSHOT_DIR=… go test ./internal/gui малює його в PNG
 internal/server    сигналінг, TURN, ліміти
 web/static         браузерний переглядач (без залежностей)
 deploy/            Dockerfile і compose для сервера

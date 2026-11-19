@@ -65,6 +65,7 @@ type session struct {
 
 	authed atomic.Bool
 	nonce  string
+	since  time.Time
 	bwe    chan cc.BandwidthEstimator
 
 	mu        sync.Mutex
@@ -72,6 +73,7 @@ type session struct {
 	remoteSet bool
 	pressed   map[string]bool
 	buttons   map[int]bool
+	path      string
 	closed    bool
 	done      chan struct{}
 }
@@ -144,7 +146,7 @@ func toICE(list []signal.ICEServer) []webrtc.ICEServer {
 
 func (h *Host) startSession(sid string, ice []signal.ICEServer) {
 	s := &session{h: h, sid: sid, pressed: map[string]bool{}, buttons: map[int]bool{},
-		done: make(chan struct{}), bwe: make(chan cc.BandwidthEstimator, 1)}
+		done: make(chan struct{}), bwe: make(chan cc.BandwidthEstimator, 1), since: time.Now()}
 	h.mu.Lock()
 	h.sessions[sid] = s
 	h.mu.Unlock()
@@ -221,7 +223,12 @@ func (s *session) start(ice []signal.ICEServer) error {
 	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
 		switch st {
 		case webrtc.PeerConnectionStateConnected:
-			h.log.Info("viewer connected", "sid", s.sid, "path", s.pathType())
+			path := s.pathType()
+			s.mu.Lock()
+			s.path = path
+			s.mu.Unlock()
+			h.log.Info("viewer connected", "sid", s.sid, "path", path)
+			h.sessionsChanged()
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 			s.close("connection " + st.String())
 		}
@@ -389,6 +396,7 @@ func (s *session) onControl(msg webrtc.DataChannelMessage) {
 		s.sendControl(ctrl{T: "auth-ok", Proof: auth.Proof(pw, "host", s.nonce, offerFP, answerFP),
 			Name: name, OS: runtime.GOOS, W: size.X, H: size.Y, Features: features})
 		h.log.Info("viewer authenticated", "sid", s.sid)
+		h.sessionsChanged()
 		h.video.add(s, s.videoTrack)
 		if h.audio != nil {
 			h.audio.add(s, s.audioTrack)

@@ -30,7 +30,7 @@ jobs:
           go-version: "1.27.x"
       - name: Linux deps
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y gcc g++ libx11-dev libxext-dev libxtst-dev
+        run: sudo apt-get update && sudo apt-get install -y gcc g++ libx11-dev libxext-dev libxtst-dev libgl1-mesa-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev
       - name: MinGW-w64 toolchain
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
@@ -50,7 +50,7 @@ jobs:
         run: |
           export CGO_ENABLED=1 CC=gcc CXX=g++
           go test ./...
-          go build -trimpath -ldflags="-s -w -extldflags=-static" -o dist/${{ matrix.out }} ./cmd/rdesk
+          go build -trimpath -ldflags="-s -w -H windowsgui -extldflags=-static" -o dist/${{ matrix.out }} ./cmd/rdesk
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.out }}

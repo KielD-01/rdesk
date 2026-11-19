@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,11 @@ type Options struct {
 	Download string // directory for uploaded files
 	// OnCredentials is called whenever the ID or password to show changes.
 	OnCredentials func(id, password string, oneTime bool, viewerURL string)
+	// OnStatus reports the connection to the server (err is nil when online).
+	OnStatus func(online bool, err error)
+	// OnSessions is called when sessions start, authenticate or end; read
+	// them with Sessions.
+	OnSessions func()
 }
 
 type Host struct {
@@ -89,6 +95,9 @@ func (h *Host) Run(ctx context.Context) error {
 			backoff = time.Second
 		}
 		h.log.Warn("disconnected from server, retrying", "err", err, "in", backoff)
+		if h.opt.OnStatus != nil {
+			h.opt.OnStatus(false, err)
+		}
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
@@ -172,6 +181,9 @@ func (h *Host) connect(ctx context.Context) error {
 			h.mu.Lock()
 			h.id = m.ID
 			h.mu.Unlock()
+			if h.opt.OnStatus != nil {
+				h.opt.OnStatus(true, nil)
+			}
 			h.showCredentials()
 		case signal.TSession:
 			h.startSession(m.Sid, m.ICE)
@@ -262,6 +274,7 @@ func (h *Host) sessionEnded(s *session) {
 		h.password = auth.OneTimeCode()
 	}
 	h.mu.Unlock()
+	h.sessionsChanged()
 	if rotate {
 		h.showCredentials()
 	}
@@ -328,3 +341,67 @@ func (h *Host) removeBitrate(s *session) {
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }
+
+// SessionInfo describes one viewer session for a UI.
+type SessionInfo struct {
+	ID     string
+	Authed bool
+	Path   string // "direct (...)" or "relay (TURN)", empty until connected
+	Since  time.Time
+}
+
+// Sessions lists current viewer sessions, oldest first.
+func (h *Host) Sessions() []SessionInfo {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]SessionInfo, 0, len(h.sessions))
+	for _, s := range h.sessions {
+		s.mu.Lock()
+		path := s.path
+		s.mu.Unlock()
+		out = append(out, SessionInfo{ID: s.sid, Authed: s.authed.Load(), Path: path, Since: s.since})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Since.Before(out[j].Since) })
+	return out
+}
+
+// Disconnect ends a viewer session.
+func (h *Host) Disconnect(id string) {
+	h.mu.Lock()
+	s := h.sessions[id]
+	h.mu.Unlock()
+	if s != nil {
+		s.close("disconnected by the host")
+	}
+}
+
+// NewOneTimeCode replaces the one-time code (no effect with a permanent password).
+func (h *Host) NewOneTimeCode() {
+	h.mu.Lock()
+	if h.opt.Password != "" {
+		h.mu.Unlock()
+		return
+	}
+	h.password = auth.OneTimeCode()
+	h.mu.Unlock()
+	h.showCredentials()
+}
+
+func (h *Host) sessionsChanged() {
+	if h.opt.OnSessions != nil {
+		h.opt.OnSessions()
+	}
+}
+
+// Close ends every session; call it after Run's context is cancelled.
+func (h *Host) Close() {
+	h.mu.Lock()
+	all := make([]*session, 0, len(h.sessions))
+	for _, s := range h.sessions {
+		all = append(all, s)
+	}
+	h.mu.Unlock()
+	for _, s := range all {
+		s.close("host stopped")
+	}
+}
